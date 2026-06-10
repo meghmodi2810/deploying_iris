@@ -57,25 +57,37 @@ jobs:
       if: ${{ env.EC2_HOST != '' && env.EC2_SSH_KEY != '' }}
       uses: aws-actions/amazon-ecr-login@v2
 
+    - name: Get ECR Auth Token
+      id: get-token
+      if: ${{ env.EC2_HOST != '' && env.EC2_SSH_KEY != '' }}
+      run: |
+        echo "token=$(aws ecr get-login-password --region ${{ secrets.AWS_REGION }})" >> $GITHUB_OUTPUT
+
     - name: SSH into EC2 and Deploy Container
       if: ${{ env.EC2_HOST != '' && env.EC2_SSH_KEY != '' }}
       uses: appleboy/ssh-action@v1.0.3
+      env:
+        ECR_PASSWORD: ${{ steps.get-token.outputs.token }}
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       with:
         host: ${{ secrets.EC2_HOST }}
         username: ubuntu
         key: ${{ secrets.EC2_SSH_KEY }}
+        envs: ECR_PASSWORD,ECR_REGISTRY,ECR_REPOSITORY
         script: |
-          # Login to ECR on EC2 using the credentials from the GitHub runner
-          echo "${{ steps.login-ecr.outputs.docker_password }}" | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+          # Login to ECR on EC2 using the token from the GitHub runner
+          echo "$ECR_PASSWORD" | docker login --username AWS --password-stdin $ECR_REGISTRY
           
           # Pull the latest image
-          docker pull ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
           # Stop and remove the old container
           docker stop iris-api || true
           docker rm iris-api || true
           
           # Run the new container
-          docker run -d -p 8000:8000 --name iris-api ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+          docker run -d -p 8000:8000 --name iris-api $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
 
 
