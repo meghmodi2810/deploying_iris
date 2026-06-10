@@ -123,36 +123,151 @@ curl -X POST "http://localhost:8000/predict" \
 
 ## ☁️ Deployment to AWS (Amazon Web Services)
 
-The most modern and direct way to deploy this container to AWS is using **AWS App Runner** or **AWS ECS (Elastic Container Service)**. Here is the step-by-step workflow:
+To deploy your containerized model to AWS, you have two primary options depending on your preference for ease-of-use versus cost:
 
-### Step 1: Push your Docker Image to Amazon ECR (Elastic Container Registry)
-1. Open the AWS Console and search for **ECR**. Click **Create Repository** (name it `iris-fastapi-app`).
-2. Install the AWS CLI locally, configure your credentials (`aws configure`), and authenticate your local Docker daemon with ECR:
-   ```bash
-   aws ecr get-login-password --region <your-region> | docker login --username AWS --password-stdin <your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com
+1. **Option A: AWS EC2 (100% Free Tier Eligible)**
+   - **Cost**: $0.00 (under the 12-month Free Tier using a `t2.micro` or `t3.micro` instance).
+   - **Complexity**: Medium (requires manually launching an EC2 instance, installing Docker, and running the container).
+2. **Option B: AWS App Runner (Fastest & Simplest)**
+   - **Cost**: Low (approx. $0.07/hour, ~$5.00/month if paused when not in use).
+   - **Complexity**: Very Low (fully automated, handles HTTPS, load balancing, and scaling automatically).
+
+Here is the step-by-step guide to both paths.
+
+---
+
+### Step 1: Install & Configure AWS CLI
+Before running the deployment script, you must install the AWS CLI and configure it with your IAM credentials.
+
+1. **Install AWS CLI** (using Windows Package Manager):
+   ```powershell
+   winget install Amazon.AWSCLI
    ```
-3. Tag and push your Docker image:
-   ```bash
-   docker tag iris-fastapi-app:latest <your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com/iris-fastapi-app:latest
-   docker push <your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com/iris-fastapi-app:latest
+   *Note: Close and reopen your terminal/IDE after installation so that the `aws` command is recognized.*
+2. **Create IAM User & Credentials**:
+   - Log into the AWS Console, search for **IAM**, and go to **Users** -> **Create user**.
+   - Attach policies directly: `AmazonEC2ContainerRegistryFullAccess`.
+   - Once created, open the user, go to the **Security credentials** tab, and click **Create access key** (choose **CLI**).
+   - Copy the **Access Key ID** and **Secret Access Key**.
+3. **Configure the CLI**:
+   ```powershell
+   aws configure
    ```
+   Enter your keys, preferred region (e.g., `us-east-1`), and set the output format to `json`.
 
-### Step 2: Deploy using AWS App Runner (Easiest Method)
-AWS App Runner automatically provisions resources, handles load balancing, SSL, and runs your container.
-1. Search for **AWS App Runner** in the AWS Console and click **Create Service**.
-2. Source: Select **Container registry** -> **Amazon ECR**.
-3. Choose your repository (`iris-fastapi-app`) and tag (`latest`).
-4. Deployment Settings: Select **Automatic** if you want App Runner to redeploy whenever you push a new image.
-5. Service Configuration:
-   - **Virtual CPU & Memory**: `1 vCPU & 2 GB` (plenty for this light model).
-   - **Port**: Set to `8000` (must match the port exposed by your Dockerfile).
-6. Click **Create & Deploy**.
-7. AWS will provide a public URL (e.g., `https://xxxxxx.us-east-1.awsapprunner.com`).
+---
 
-### Step 3: Test Remotely
-Once deployed, make a request to the public URL:
-```bash
-curl -X POST "https://xxxxxx.us-east-1.awsapprunner.com/predict" \
-     -H "Content-Type: application/json" \
-     -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+### Step 2: Build & Push the Image to ECR
+We have provided an automated PowerShell helper script (`deploy.ps1`) to handle the Docker registry login, repository creation, and image pushing:
+
+```powershell
+# Run the deployment script
+.\deploy.ps1
 ```
+
+Once completed, the script will output your ECR Image URI, which looks like:
+`<your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com/iris-fastapi-app:latest`
+
+---
+
+### Step 3: Deploy the Container
+
+#### Method 1: Deploying to AWS App Runner (Simplest, Paid)
+1. In the AWS Console, search for **App Runner** and click **Create service**.
+2. **Source**: Select **Container registry** -> **Amazon ECR**.
+3. **Container image URI**: Paste your ECR Image URI (or click **Browse** to select it).
+4. **Deployment Settings**: Select **Manual** or **Automatic**.
+5. **Service Role**: Choose **Create new service role** (so App Runner can pull the image from ECR).
+6. **Configure Service**:
+   - **Virtual CPU & Memory**: `1 vCPU & 2 GB`
+   - **Port**: Set to `8000` (FastAPI listens on port 8000).
+7. Review and click **Create & Deploy**. App Runner will provide a public URL (e.g., `https://xxxxxx.us-east-1.awsapprunner.com`).
+
+#### Method 2: Deploying to AWS EC2 (100% Free Tier)
+1. **Launch EC2 Instance**:
+   - Go to the EC2 Dashboard -> **Launch instance**.
+   - Name: `iris-model-server`
+   - OS: Select **Ubuntu** (LTS) or **Amazon Linux 2023**.
+   - Instance type: Select `t2.micro` (or `t3.micro` if in a region where it is free tier eligible).
+   - Key pair: Create or select an existing SSH key pair.
+   - Network Settings: Enable **Allow HTTP traffic from the internet** and **Allow SSH traffic**.
+   - Click **Launch instance**.
+2. **Configure Security Group**:
+   - Go to your instance's **Security Groups** -> **Edit inbound rules**.
+   - Add a rule: **Custom TCP**, Port `8000`, Source `0.0.0.0/0` (if you want to access the API on port 8000 directly), OR redirect port 80 to 8000.
+3. **Install Docker and Deploy**:
+   - SSH into your instance.
+   - Install Docker (e.g., for Ubuntu):
+     ```bash
+     sudo apt-get update
+     sudo apt-get install -y docker.io
+     sudo systemctl start docker
+     sudo systemctl enable docker
+     sudo usermod -aG docker $USER
+     # Log out and log back in to apply group changes
+     ```
+   - Install AWS CLI on the EC2 instance and run `aws configure` with your IAM keys (or assign an IAM Role to the EC2 instance with ECR read permissions).
+   - Log in to ECR on the instance:
+     ```bash
+     aws ecr get-login-password --region <your-region> | docker login --username AWS --password-stdin <your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com
+     ```
+   - Run the container:
+     ```bash
+     docker run -d -p 8000:8000 --name iris-api <your-aws-account-id>.dkr.ecr.<your-region>.amazonaws.com/iris-fastapi-app:latest
+     ```
+
+---
+
+## 🔄 CI/CD Pipeline (GitHub Actions)
+
+We have included a production-ready GitHub Actions workflow in `.github/workflows/deploy.yml` that automates building the Docker image and pushing it to Amazon ECR on every push to your `main` or `master` branch.
+
+Depending on your deployment target, it can also automate the container deploy trigger.
+
+### 1. Add Secrets to your GitHub Repository
+To allow GitHub Actions to authenticate with AWS, navigate to your GitHub Repository -> **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**, and add:
+
+| Secret Name | Value Description | Example |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | Your AWS IAM User's access key | `AKIAIOSFODNN7EXAMPLE` |
+| `AWS_SECRET_ACCESS_KEY` | Your AWS IAM User's secret key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+| `AWS_REGION` | The AWS region where your registry resides | `us-east-1` |
+| `ECR_REPOSITORY` | The name of your ECR repository | `iris-fastapi-app` |
+
+---
+
+### 2. Automatic Deployment Setup
+
+#### For AWS App Runner
+If using App Runner, you do not need any additional GitHub configuration.
+1. During App Runner service creation, set **Deployment settings** to **Automatic**.
+2. When the GitHub workflow pushes the new image to ECR with the `:latest` tag, AWS App Runner will automatically pull the new image and redeploy your API.
+
+#### For AWS EC2 (Free Tier)
+If using EC2, you can automate the pull and run process via SSH. Add these two additional secrets to GitHub:
+
+| Secret Name | Value Description |
+|---|---|
+| `EC2_HOST` | The public IP address or public DNS of your EC2 instance. |
+| `EC2_SSH_KEY` | The contents of your private key `.pem` file used to SSH into the instance. |
+
+*Note: The workflow will automatically detect if these secrets are present and will skip the EC2 deployment job if they are left blank.*
+
+---
+
+### Step 4: Test the Live API
+Once running (either via manual steps or CI/CD), you can test predictions by sending a POST request to your public endpoint:
+
+```powershell
+$body = @{
+    features = @(5.1, 3.5, 1.4, 0.2)
+} | ConvertTo-Json
+
+# For App Runner:
+Invoke-RestMethod -Uri "https://<app-runner-id>.<region>.awsapprunner.com/predict" -Method Post -Body $body -ContentType "application/json"
+
+# For EC2:
+Invoke-RestMethod -Uri "http://<ec2-public-ip>:8000/predict" -Method Post -Body $body -ContentType "application/json"
+```
+
+
